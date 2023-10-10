@@ -109,7 +109,8 @@ public class AudioPlayer
 			final File customFile = new File(RuneLite.RUNELITE_DIR, clipName);
 			return new BufferedInputStream(new FileInputStream(customFile));
 		}
-		else {
+		else
+		{
 			return getClass().getResourceAsStream(clipName);
 		}
 	}
