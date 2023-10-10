@@ -8,11 +8,13 @@ import net.runelite.client.RuneLite;
 import javax.sound.sampled.*;
 import java.io.*;
 import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 public class AudioPlayer
 {
-	private HashMap<String, Clip> clips = new HashMap<String, Clip>();
+	private final Map<String, byte[]> data = new HashMap<>(4);
 	private float volume = 1f;
 
 	public void tryLoadAudio(HunllefHelperConfig config, String[] clipNames)
@@ -30,23 +32,37 @@ public class AudioPlayer
 
 	public void unloadAudio()
 	{
-		for (Clip clip : clips.values())
-		{
-			clip.stop();
-			clip.flush();
-			clip.close();
-		}
-
-		clips.clear();
+		data.clear();
 	}
 
 	public synchronized void playSoundClip(String sound)
 	{
-		if (clips.containsKey(sound))
+		if (data.containsKey(sound))
 		{
-			Clip clip = clips.get(sound);
-			clip.setFramePosition(0);
-			clip.start();
+			try {
+				Clip clip = AudioSystem.getClip();
+				byte[] bytes = data.get(sound);
+				AudioInputStream audioInputStream = AudioSystem.getAudioInputStream(new ByteArrayInputStream(bytes));
+				clip.open(audioInputStream);
+				setClipVolume(clip);
+				clip.setFramePosition(0);
+				clip.start();
+				CountDownLatch latch = new CountDownLatch(1);
+				clip.addLineListener(e -> {
+					if (e.getType() == LineEvent.Type.STOP) {
+						latch.countDown();
+					}
+				});
+				latch.await();
+				clip.stop();
+				clip.flush();
+				clip.close();
+			}
+			catch (IOException | NullPointerException | SecurityException | UnsupportedAudioFileException |
+				   LineUnavailableException | InterruptedException ex)
+			{
+				log.error("Unable to load sound " + sound, ex);
+			}
 		}
 	}
 
@@ -56,56 +72,46 @@ public class AudioPlayer
 		volumeF = Math.max(volumeF, 0f);
 		volumeF = Math.min(volumeF, 2f);
 
-		if (this.volume != volumeF)
-		{
-			this.volume = volumeF;
-
-			for (Clip clip : clips.values())
-			{
-				setClipVolume(clip);
-			}
-		}
+		this.volume = volumeF;
 	}
 
 	private boolean tryLoadClip(AudioMode audioMode, String clipName)
 	{
-		if (audioMode == AudioMode.Custom)
-		{
-			final File customFile = new File(RuneLite.RUNELITE_DIR, clipName);
-
-			try (
-				InputStream fileStream = new BufferedInputStream(new FileInputStream(customFile));
-				AudioInputStream sound = AudioSystem.getAudioInputStream(fileStream))
-			{
-				Clip clip = AudioSystem.getClip();
-				clips.put(clipName, clip);
-				clip.open(sound);
-				setClipVolume(clip);
-				return true;
-			}
-			catch (UnsupportedAudioFileException | IOException | LineUnavailableException | SecurityException ex)
-			{
-				log.error("Unable to load sound " + clipName, ex);
-			}
-		}
-
 		try (
-			InputStream audioSource = getClass().getResourceAsStream(clipName);
-			BufferedInputStream bufferedStream = new BufferedInputStream(audioSource);
-			AudioInputStream audioInputStream = AudioSystem.getAudioInputStream(bufferedStream))
+				InputStream stream = getAppropriateInputStream(clipName, audioMode))
 		{
-			Clip clip = AudioSystem.getClip();
-			clips.put(clipName, clip);
-			clip.open(audioInputStream);
-			setClipVolume(clip);
+			data.put(clipName, readAllBytes(stream));
 			return true;
 		}
-		catch (UnsupportedAudioFileException | IOException | LineUnavailableException | SecurityException ex)
+		catch (IOException | NullPointerException | SecurityException ex)
 		{
 			log.error("Unable to load sound " + clipName, ex);
 		}
-
 		return false;
+	}
+
+	private byte[] readAllBytes(InputStream inputStream) throws IOException {
+		ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+		int nRead;
+		byte[] data = new byte[4];
+		while ((nRead = inputStream.read(data, 0, data.length)) != -1)
+		{
+			buffer.write(data, 0, nRead);
+		}
+		buffer.flush();
+		return buffer.toByteArray();
+	}
+
+	private InputStream getAppropriateInputStream(String clipName, AudioMode mode) throws FileNotFoundException
+	{
+		if (mode == AudioMode.Custom)
+		{
+			final File customFile = new File(RuneLite.RUNELITE_DIR, clipName);
+			return new BufferedInputStream(new FileInputStream(customFile));
+		}
+		else {
+			return getClass().getResourceAsStream(clipName);
+		}
 	}
 
 	private void setClipVolume(Clip clip)
